@@ -1,19 +1,19 @@
 import http = require('http');
 import https = require('https');
+import Keyv = require('keyv');
+import CacheableRequest = require('cacheable-request');
+import PCancelable = require('p-cancelable');
 import ResponseLike = require('responselike');
 import {Readable as ReadableStream} from 'stream';
-import {Except, Merge} from 'type-fest';
-import PCancelable = require('p-cancelable');
-import CacheableRequest = require('cacheable-request');
+import {Timings} from '@szmarczak/http-timer';
 import CacheableLookup from 'cacheable-lookup';
-import Keyv = require('keyv');
-import {Timings} from '@szmarczak/http-timer/dist';
+import {Except, Merge, Promisable} from 'type-fest';
+import {GotReturn} from '../create';
+import {GotError, HTTPError, MaxRedirectsError, ParseError} from '../errors';
 import {Hooks} from '../known-hook-events';
-import {GotError, ParseError, HTTPError, MaxRedirectsError} from '../errors';
-import {ProxyStream} from '../as-stream';
 import {URLOptions} from './options-to-url';
 
-export type GenericError = Error | GotError | ParseError | HTTPError | MaxRedirectsError;
+export type GeneralError = Error | GotError | HTTPError | MaxRedirectsError | ParseError;
 
 export type Method =
 	| 'GET'
@@ -58,7 +58,7 @@ export interface Response<BodyType = unknown> extends http.IncomingMessage {
 
 	fromCache?: boolean;
 	isFromCache?: boolean;
-	req: http.ClientRequest;
+	req?: http.ClientRequest;
 	requestUrl: string;
 	retryCount: number;
 	timings: Timings;
@@ -66,11 +66,12 @@ export interface Response<BodyType = unknown> extends http.IncomingMessage {
 	request: {
 		options: NormalizedOptions;
 	};
+	url: string;
 }
 
 // TODO: The `ResponseLike` type should be properly fixed instead:
 // https://github.com/sindresorhus/got/pull/827/files#r323633794
-export interface ResponseObject extends ResponseLike {
+export interface ResponseObject extends Partial<ResponseLike> {
 	socket: {
 		remoteAddress: string;
 	};
@@ -78,25 +79,29 @@ export interface ResponseObject extends ResponseLike {
 
 export interface RetryObject {
 	attemptCount: number;
-	retryOptions: RetryOptions;
-	error: GenericError;
+	retryOptions: Required<RetryOptions>;
+	error: GotError | HTTPError | MaxRedirectsError | ParseError;
 	computedValue: number;
 }
 
 export type RetryFunction = (retryObject: RetryObject) => number;
 
-export type HandlerFunction = <T extends ProxyStream | CancelableRequest<Response>>(options: NormalizedOptions, next: (options: NormalizedOptions) => T) => T;
+export type HandlerFunction = <T extends GotReturn>(options: NormalizedOptions, next: (options: NormalizedOptions) => T) => Promisable<T>;
 
-export interface RetryOptions {
-	limit?: number;
-	calculateDelay?: RetryFunction;
-	methods?: Method[];
-	statusCodes?: number[];
-	errorCodes?: string[];
+export interface DefaultRetryOptions {
+	limit: number;
+	methods: Method[];
+	statusCodes: number[];
+	errorCodes: string[];
+	calculateDelay: RetryFunction;
 	maxRetryAfter?: number;
 }
 
-export type RequestFunction = typeof https.request;
+export interface RetryOptions extends Partial<DefaultRetryOptions> {
+	retries?: number;
+}
+
+export type RequestFunction = typeof http.request;
 
 export interface AgentByProtocol {
 	http?: http.Agent;
@@ -113,29 +118,62 @@ export interface Delays {
 	request?: number;
 }
 
-export type Headers = Record<string, string | string[]>;
+export type Headers = Record<string, string | string[] | undefined>;
 
-interface CookieJar {
-	getCookieString(url: string, callback: (error: Error, cookieHeader: string) => void): void;
+interface ToughCookieJar {
+	getCookieString(currentUrl: string, options: {[key: string]: unknown}, cb: (err: Error | null, cookies: string) => void): void;
+	getCookieString(url: string, callback: (error: Error | null, cookieHeader: string) => void): void;
+	setCookie(cookieOrString: unknown, currentUrl: string, options: {[key: string]: unknown}, cb: (err: Error | null, cookie: unknown) => void): void;
+	setCookie(rawCookie: string, url: string, callback: (error: Error | null, result: unknown) => void): void;
+}
+
+interface PromiseCookieJar {
 	getCookieString(url: string): Promise<string>;
-	setCookie(rawCookie: string, url: string, callback: (error: Error, result: unknown) => void): void;
 	setCookie(rawCookie: string, url: string): Promise<unknown>;
 }
 
-// TODO: Missing lots of `http` options
-export interface Options extends URLOptions {
+/* eslint-disable @typescript-eslint/indent */
+export type DefaultOptions = Merge<
+	Required<
+		Except<
+			GotOptions,
+			// Overrode
+			'hooks' |
+			'retry' |
+			'timeout' |
+			'context' |
+			// Should not be present
+			'agent' |
+			'body' |
+			'cookieJar' |
+			'encoding' |
+			'form' |
+			'json' |
+			'lookup' |
+			'request' |
+			'url'
+		>
+	>,
+	{
+		hooks: Required<Hooks>;
+		retry: DefaultRetryOptions;
+		timeout: Delays;
+		context: {[key: string]: any};
+	}
+>;
+/* eslint-enable @typescript-eslint/indent */
+
+export interface GotOptions {
 	url?: URL | string;
 	body?: string | Buffer | ReadableStream;
-	hostname?: string;
-	socketPath?: string;
-	hooks?: Partial<Hooks>;
+	hooks?: Hooks;
 	decompress?: boolean;
 	isStream?: boolean;
-	encoding?: BufferEncoding | null;
+	encoding?: BufferEncoding;
 	method?: Method;
-	retry?: number | RetryOptions;
+	retry?: RetryOptions | number;
 	throwHttpErrors?: boolean;
-	cookieJar?: CookieJar;
+	cookieJar?: ToughCookieJar | PromiseCookieJar;
 	ignoreInvalidCookies?: boolean;
 	request?: RequestFunction;
 	agent?: http.Agent | https.Agent | boolean | AgentByProtocol;
@@ -148,39 +186,45 @@ export interface Options extends URLOptions {
 	timeout?: number | Delays;
 	dnsCache?: CacheableLookup | Map<string, string> | Keyv | false;
 	useElectronNet?: boolean;
-	form?: Record<string, any>;
-	json?: Record<string, any>;
-	context?: {[key: string]: unknown};
+	form?: {[key: string]: any};
+	json?: {[key: string]: any};
+	context?: {[key: string]: any};
 	maxRedirects?: number;
 	lookup?: CacheableLookup['lookup'];
+	methodRewriting?: boolean;
 }
 
-export interface NormalizedOptions extends Except<Options, keyof URLOptions> {
+export type Options = Merge<https.RequestOptions, Merge<GotOptions, URLOptions>>;
+
+export interface NormalizedOptions extends Options {
 	// Normalized Got options
 	headers: Headers;
-	hooks: Hooks;
+	hooks: Required<Hooks>;
 	timeout: Delays;
 	dnsCache?: CacheableLookup | false;
+	lookup?: CacheableLookup['lookup'];
 	retry: Required<RetryOptions>;
 	prefixUrl: string;
 	method: Method;
 	url: URL;
 	cacheableRequest?: (options: string | URL | http.RequestOptions, callback?: (response: http.ServerResponse | ResponseLike) => void) => CacheableRequest.Emitter;
+	cookieJar?: PromiseCookieJar;
+	maxRedirects: number;
 
 	// UNIX socket support
 	path?: string;
 }
 
-export interface ExtendedOptions extends Options {
+export interface ExtendOptions extends Options {
 	handlers?: HandlerFunction[];
 	mutableDefaults?: boolean;
 }
 
 export interface Defaults {
-	options: Except<NormalizedOptions, 'url'>;
+	options: DefaultOptions;
 	handlers: HandlerFunction[];
-	_rawHandlers?: HandlerFunction[];
 	mutableDefaults: boolean;
+	_rawHandlers?: HandlerFunction[];
 }
 
 export type URLOrOptions = Options | string;
@@ -198,8 +242,8 @@ export interface GotEvents<T> {
 	on(name: 'uploadProgress' | 'downloadProgress', listener: (progress: Progress) => void): T;
 }
 
-export interface CancelableRequest<T extends Response | Response['body']> extends Merge<PCancelable<T>, GotEvents<CancelableRequest<T>>> {
-	json<TReturnType extends object>(): CancelableRequest<TReturnType>;
+export interface CancelableRequest<T extends Response | Response['body']> extends PCancelable<T>, GotEvents<CancelableRequest<T>> {
+	json<TReturnType>(): CancelableRequest<TReturnType>;
 	buffer(): CancelableRequest<Buffer>;
 	text(): CancelableRequest<string>;
 }

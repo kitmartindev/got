@@ -1,41 +1,36 @@
-import {IncomingMessage} from 'http';
-import EventEmitter = require('events');
-import stream = require('stream');
 import decompressResponse = require('decompress-response');
+import EventEmitter = require('events');
 import mimicResponse = require('mimic-response');
-import {NormalizedOptions, Response} from './utils/types';
-import {downloadProgress} from './progress';
+import stream = require('stream');
+import {IncomingMessage} from 'http';
+import {promisify} from 'util';
+import {createProgressStream} from './progress';
+import {NormalizedOptions} from './utils/types';
 
-export default (response: IncomingMessage, options: NormalizedOptions, emitter: EventEmitter) => {
+const pipeline = promisify(stream.pipeline);
+
+export default async (response: IncomingMessage, options: NormalizedOptions, emitter: EventEmitter): Promise<void> => {
 	const downloadBodySize = Number(response.headers['content-length']) || undefined;
-	const progressStream = downloadProgress(emitter, downloadBodySize);
+	const progressStream = createProgressStream('downloadProgress', emitter, downloadBodySize);
 
 	mimicResponse(response, progressStream);
 
 	const newResponse = (
 		options.decompress &&
 		options.method !== 'HEAD' ? decompressResponse(progressStream as unknown as IncomingMessage) : progressStream
-	) as Response;
+	);
 
 	if (!options.decompress && ['gzip', 'deflate', 'br'].includes(response.headers['content-encoding'] ?? '')) {
-		options.encoding = null;
+		options.responseType = 'default';
+
+		// @ts-ignore Internal use.
+		options.encoding = 'buffer';
 	}
 
 	emitter.emit('response', newResponse);
 
-	emitter.emit('downloadProgress', {
-		percent: 0,
-		transferred: 0,
-		total: downloadBodySize
-	});
-
-	stream.pipeline(
+	return pipeline(
 		response,
-		progressStream,
-		error => {
-			if (error) {
-				emitter.emit('error', error);
-			}
-		}
+		progressStream
 	);
 };

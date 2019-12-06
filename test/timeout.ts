@@ -6,11 +6,15 @@ import http = require('http');
 import net = require('net');
 import getStream = require('get-stream');
 import test from 'ava';
+import delay = require('delay');
+import CacheableLookup from 'cacheable-lookup';
+import {Handler} from 'express';
 import pEvent = require('p-event');
 import got from '../source';
 import timedOut from '../source/utils/timed-out';
-import withServer, {withServerAndLolex} from './helpers/with-server';
 import slowDataStream from './helpers/slow-data-stream';
+import {GlobalClock} from './helpers/types';
+import withServer, {withServerAndLolex} from './helpers/with-server';
 
 const pStreamPipeline = promisify(stream.pipeline);
 
@@ -25,7 +29,7 @@ const keepAliveAgent = new http.Agent({
 	keepAlive: true
 });
 
-const defaultHandler = clock => (request, response) => {
+const defaultHandler = (clock: GlobalClock): Handler => (request, response) => {
 	request.resume();
 	request.on('end', () => {
 		clock.tick(requestDelay);
@@ -33,7 +37,7 @@ const defaultHandler = clock => (request, response) => {
 	});
 };
 
-const downloadHandler = clock => (_request, response) => {
+const downloadHandler = (clock: GlobalClock): Handler => (_request, response) => {
 	response.writeHead(200, {
 		'transfer-encoding': 'chunked'
 	});
@@ -79,19 +83,18 @@ test.serial('socket timeout', async t => {
 		got('https://example.com', {
 			timeout: {socket: 1},
 			retry: 0,
-			// @ts-ignore
 			request: () => {
 				const stream = new PassThroughStream();
-				// @ts-ignore
+				// @ts-ignore Mocking the behaviour of a ClientRequest
 				stream.setTimeout = (ms, callback) => {
 					callback();
 				};
 
-				// @ts-ignore
+				// @ts-ignore Mocking the behaviour of a ClientRequest
 				stream.abort = () => {};
 				stream.resume();
 
-				return stream;
+				return stream as unknown as http.ClientRequest;
 			}
 		}),
 		{
@@ -103,12 +106,19 @@ test.serial('socket timeout', async t => {
 });
 
 test.serial('send timeout', withServerAndLolex, async (t, server, got, clock) => {
-	server.get('/', defaultHandler(clock));
+	server.post('/', defaultHandler(clock));
 
 	await t.throwsAsync(
-		got({
+		got.post({
 			timeout: {send: 1},
+			body: new stream.PassThrough(),
 			retry: 0
+		}).on('request', request => {
+			request.once('socket', socket => {
+				socket.once('connect', () => {
+					clock.tick(10);
+				});
+			});
 		}),
 		{
 			...errorMatcher,
@@ -131,7 +141,7 @@ test.serial('send timeout (keepalive)', withServerAndLolex, async (t, server, go
 			timeout: {send: 1},
 			retry: 0,
 			body: slowDataStream(clock)
-		}).on('request', request => {
+		}).on('request', (request: http.ClientRequest) => {
 			request.once('socket', socket => {
 				t.false(socket.connecting);
 
@@ -194,7 +204,7 @@ test.serial('response timeout (keepalive)', withServerAndLolex, async (t, server
 		agent: keepAliveAgent,
 		timeout: {response: 1},
 		retry: 0
-	}).on('request', request => {
+	}).on('request', (request: http.ClientRequest) => {
 		request.once('socket', socket => {
 			t.false(socket.connecting);
 			socket.once('connect', () => {
@@ -213,9 +223,8 @@ test.serial('connect timeout', withServerAndLolex, async (t, _server, got, clock
 	await t.throwsAsync(
 		got({
 			createConnection: options => {
-				// @ts-ignore
-				const socket = new net.Socket(options);
-				// @ts-ignore
+				const socket = new net.Socket(options as object as net.SocketConstructorOpts);
+				// @ts-ignore We know that it is readonly, but we have to test it
 				socket.connecting = true;
 				setImmediate(() => {
 					socket.emit('lookup', null, '127.0.0.1', 4, 'localhost');
@@ -224,7 +233,7 @@ test.serial('connect timeout', withServerAndLolex, async (t, _server, got, clock
 			},
 			timeout: {connect: 1},
 			retry: 0
-		}).on('request', request => {
+		}).on('request', (request: http.ClientRequest) => {
 			request.on('socket', () => {
 				clock.runAll();
 			});
@@ -241,14 +250,14 @@ test.serial('connect timeout (ip address)', withServerAndLolex, async (t, _serve
 		got({
 			hostname: '127.0.0.1',
 			createConnection: options => {
-				const socket = new net.Socket(options);
-				// @ts-ignore
+				const socket = new net.Socket(options as object as net.SocketConstructorOpts);
+				// @ts-ignore We know that it is readonly, but we have to test it
 				socket.connecting = true;
 				return socket;
 			},
 			timeout: {connect: 1},
 			retry: 0
-		}).on('request', request => {
+		}).on('request', (request: http.ClientRequest) => {
 			request.on('socket', () => {
 				clock.runAll();
 			});
@@ -264,9 +273,8 @@ test.serial('secureConnect timeout', withServerAndLolex, async (t, _server, got,
 	await t.throwsAsync(
 		got.secure({
 			createConnection: options => {
-				// @ts-ignore
-				const socket = new net.Socket(options);
-				// @ts-ignore
+				const socket = new net.Socket(options as object as net.SocketConstructorOpts);
+				// @ts-ignore We know that it is readonly, but we have to test it
 				socket.connecting = true;
 				setImmediate(() => {
 					socket.emit('lookup', null, '127.0.0.1', 4, 'localhost');
@@ -279,7 +287,7 @@ test.serial('secureConnect timeout', withServerAndLolex, async (t, _server, got,
 			},
 			timeout: {secureConnect: 0},
 			retry: 0
-		}).on('request', request => {
+		}).on('request', (request: http.ClientRequest) => {
 			request.on('socket', () => {
 				clock.runAll();
 			});
@@ -308,10 +316,11 @@ test.serial('lookup timeout', withServerAndLolex, async (t, server, got, clock) 
 
 	await t.throwsAsync(
 		got({
+			// @ts-ignore Manual tests
 			lookup: () => {},
 			timeout: {lookup: 1},
 			retry: 0
-		}).on('request', request => {
+		}).on('request', (request: http.ClientRequest) => {
 			request.on('socket', () => {
 				clock.runAll();
 			});
@@ -344,7 +353,7 @@ test.serial('lookup timeout no error (keepalive)', withServerAndLolex, async (t,
 		agent: keepAliveAgent,
 		timeout: {lookup: 1},
 		retry: 0
-	}).on('request', request => {
+	}).on('request', (request: http.ClientRequest) => {
 		request.once('connect', () => {
 			t.fail('connect event fired, invalidating test');
 		});
@@ -418,6 +427,26 @@ test.serial('no unhandled `socket hung up` errors', withServerAndLolex, async (t
 	);
 });
 
+// TODO: use lolex here
+test.serial('no unhandled timeout errors', withServer, async (t, _server, got) => {
+	await t.throwsAsync(got({
+		retry: 0,
+		timeout: 100,
+		request: (...args: any[]) => {
+			// @ts-ignore
+			const result = http.request(...args);
+
+			result.once('socket', () => {
+				result.socket.destroy();
+			});
+
+			return result;
+		}
+	}));
+
+	await delay(200);
+});
+
 test.serial('no more timeouts after an error', withServerAndLolex, async (t, _server, got, clock) => {
 	await t.throwsAsync(got(`http://${Date.now()}.dev`, {
 		retry: 1,
@@ -431,6 +460,14 @@ test.serial('no more timeouts after an error', withServerAndLolex, async (t, _se
 			request: 1
 		}
 	}).on('request', () => {
+		const {setTimeout} = global;
+		// @ts-ignore Augmenting global for testing purposes
+		global.setTimeout = (callback, _ms, ...args) => {
+			callback(...args);
+
+			global.setTimeout = setTimeout;
+		};
+
 		clock.runAll();
 	}), {instanceOf: got.GotError});
 
@@ -444,9 +481,9 @@ test.serial('socket timeout is canceled on error', withServerAndLolex, async (t,
 	const promise = got({
 		timeout: {socket: 50},
 		retry: 0
-	}).on('request', request => {
-		request.emit('error', new Error(message));
+	}).on('request', (request: http.ClientRequest) => {
 		request.abort();
+		request.emit('error', new Error(message));
 	});
 
 	await t.throwsAsync(promise, {message});
@@ -463,8 +500,8 @@ test.serial('no memory leak when using socket timeout and keepalive agent', with
 		timeout: {socket: requestDelay * 2}
 	});
 
-	let socket;
-	promise.on('request', request => {
+	let socket!: net.Socket;
+	promise.on('request', (request: http.ClientRequest) => {
 		request.on('socket', () => {
 			socket = request.socket;
 		});
@@ -494,7 +531,7 @@ test('ensure there are no new timeouts after cancelation', t => {
 test('double calling timedOut has no effect', t => {
 	const emitter = new EventEmitter();
 
-	const attach = () => timedOut(emitter as http.ClientRequest, {
+	const attach = (): () => void => timedOut(emitter as http.ClientRequest, {
 		connect: 1
 	}, {
 		hostname: '127.0.0.1'
@@ -511,16 +548,18 @@ test.serial('doesn\'t throw on early lookup', withServerAndLolex, async (t, serv
 		response.end('ok');
 	});
 
+	// @ts-ignore
 	await t.notThrowsAsync(got('', {
 		timeout: {
 			lookup: 1
 		},
 		retry: 0,
-		lookup: (_hostname, options, callback) => {
+		lookup: (...[_hostname, options, callback]: Parameters<CacheableLookup['lookup']>) => {
 			if (typeof options === 'function') {
 				callback = options;
 			}
 
+			// @ts-ignore This should be fixed in upstream
 			callback(null, '127.0.0.1', 4);
 		}
 	}));

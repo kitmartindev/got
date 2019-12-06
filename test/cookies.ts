@@ -1,5 +1,4 @@
 import net = require('net');
-import {AddressInfo} from 'net';
 import test from 'ava';
 import toughCookie = require('tough-cookie');
 import delay = require('delay');
@@ -89,11 +88,16 @@ test('does not throw on invalid cookies when options.ignoreInvalidCookies is set
 
 test('catches store errors', async t => {
 	const error = 'Some error';
-	// @ts-ignore
 	const cookieJar = new toughCookie.CookieJar({
-		findCookies: (_, __, cb) => {
-			cb(new Error(error), []);
-		}
+		findCookies: (_, __, callback) => {
+			callback(new Error(error), []);
+		},
+		findCookie: () => {},
+		getAllCookies: () => {},
+		putCookie: () => {},
+		removeCookies: () => {},
+		removeCookie: () => {},
+		updateCookie: () => {}
 	});
 
 	await t.throwsAsync(got('https://example.com', {cookieJar}), error);
@@ -130,15 +134,14 @@ test('no unhandled errors', async t => {
 
 	const options = {
 		cookieJar: {
-			setCookie: async (_rawCookie, _url) => {},
-			getCookieString: async _url => {
+			setCookie: async (_rawCookie: string, _url: string) => {},
+			getCookieString: async (_url: string) => {
 				throw new Error(message);
 			}
 		}
 	};
 
-	// @ts-ignore Manual tests
-	await t.throwsAsync(got(`http://127.0.0.1:${(server.address() as AddressInfo).port}`, options), {message});
+	await t.throwsAsync(got(`http://127.0.0.1:${(server.address() as net.AddressInfo).port}`, options), {message});
 	await delay(500);
 	t.pass();
 
@@ -151,15 +154,15 @@ test('accepts custom `cookieJar` object', withServer, async (t, server, got) => 
 		response.end(request.headers.cookie);
 	});
 
-	const cookies = {};
+	const cookies: Record<string, string> = {};
 	const cookieJar = {
-		async getCookieString(url) {
+		async getCookieString(url: string) {
 			t.is(typeof url, 'string');
 
 			return cookies[url];
 		},
 
-		async setCookie(rawCookie, url) {
+		async setCookie(rawCookie: string, url: string) {
 			cookies[url] = rawCookie;
 		}
 	};
@@ -172,20 +175,38 @@ test('accepts custom `cookieJar` object', withServer, async (t, server, got) => 
 });
 
 test('throws on invalid `options.cookieJar.setCookie`', async t => {
+	// @ts-ignore Error tests
 	await t.throwsAsync(got('https://example.com', {
 		cookieJar: {
-			// @ts-ignore
 			setCookie: () => {}
 		}
 	}), '`options.cookieJar.setCookie` needs to be an async function with 2 arguments');
 });
 
 test('throws on invalid `options.cookieJar.getCookieString`', async t => {
+	// @ts-ignore Error tests
 	await t.throwsAsync(got('https://example.com', {
 		cookieJar: {
-			setCookie: async (_rawCookie, _url) => {},
-			// @ts-ignore
+			setCookie: async (_rawCookie: string, _url: string) => {},
 			getCookieString: () => {}
 		}
 	}), '`options.cookieJar.getCookieString` needs to be an async function with 1 argument');
+});
+
+test('cookies are cleared when redirecting to a different hostname (no cookieJar)', withServer, async (t, server, got) => {
+	server.get('/', (_request, response) => {
+		response.writeHead(302, {
+			location: 'https://httpbin.org/anything'
+		});
+		response.end();
+	});
+
+	const {headers} = await got('', {
+		headers: {
+			cookie: 'foo=bar',
+			'user-agent': 'custom'
+		}
+	}).json();
+	t.is(headers.Cookie, undefined);
+	t.is(headers['User-Agent'], 'custom');
 });

@@ -1,6 +1,5 @@
-import is from '@sindresorhus/is';
 import test from 'ava';
-import got from '../source';
+import got, {HTTPError, UnsupportedProtocolError} from '../source';
 import withServer from './helpers/with-server';
 
 test('simple request', withServer, async (t, server, got) => {
@@ -38,7 +37,7 @@ test('http errors have `response` property', withServer, async (t, server, got) 
 		response.end('not');
 	});
 
-	const error = await t.throwsAsync(got(''), got.HTTPError);
+	const error = await t.throwsAsync<HTTPError>(got(''), HTTPError);
 	t.is(error.response.statusCode, 404);
 	t.is(error.response.body, 'not');
 });
@@ -67,18 +66,20 @@ test('doesn\'t throw if `options.throwHttpErrors` is false', withServer, async (
 
 test('invalid protocol throws', async t => {
 	await t.throwsAsync(got('c:/nope.com').json(), {
-		instanceOf: got.UnsupportedProtocolError,
+		instanceOf: UnsupportedProtocolError,
 		message: 'Unsupported protocol "c:"'
 	});
 });
 
-test('gives buffer if `options.encoding` is null', withServer, async (t, server, got) => {
+test('custom `options.encoding`', withServer, async (t, server, got) => {
+	const string = 'ok';
+
 	server.get('/', (_request, response) => {
-		response.end('ok');
+		response.end(string);
 	});
 
-	const data = (await got({encoding: null})).body;
-	t.true(is.buffer(data));
+	const data = (await got({encoding: 'base64'})).body;
+	t.is(data, Buffer.from(string).toString('base64'));
 });
 
 test('`searchParams` option', withServer, async (t, server, got) => {

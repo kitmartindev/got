@@ -1,18 +1,19 @@
 import {promisify} from 'util';
 import stream = require('stream');
 import test from 'ava';
+import {Handler} from 'express';
 import toReadableStream = require('to-readable-stream');
 import got from '../source';
 import withServer from './helpers/with-server';
 
 const pStreamPipeline = promisify(stream.pipeline);
 
-const defaultEndpoint = async (request, response) => {
+const defaultEndpoint: Handler = async (request, response) => {
 	response.setHeader('method', request.method);
 	await pStreamPipeline(request, response);
 };
 
-const echoHeaders = (request, response) => {
+const echoHeaders: Handler = (request, response) => {
 	response.end(JSON.stringify(request.headers));
 };
 
@@ -24,9 +25,12 @@ test('GET cannot have body', withServer, async (t, server, got) => {
 
 test('invalid body', async t => {
 	await t.throwsAsync(
-		got('https://example.com', {body: {} as any}),
-		TypeError,
-		'The `body` option must be a stream.Readable, string or Buffer'
+		// @ts-ignore Error tests
+		got.post('https://example.com', {body: {}}),
+		{
+			instanceOf: TypeError,
+			message: 'The `body` option must be a stream.Readable, string or Buffer'
+		}
 	);
 });
 
@@ -169,7 +173,7 @@ test('`content-type` header is not overriden when object in `options.body`', wit
 });
 
 test('throws when form body is not a plain object or array', async t => {
-	// @ts-ignore manual test
+	// @ts-ignore Manual test
 	await t.throwsAsync(got.post('https://example.com', {form: 'such=wow'}), {
 		instanceOf: TypeError,
 		message: 'The `form` option must be an Object'
@@ -180,7 +184,7 @@ test('throws when form body is not a plain object or array', async t => {
 test('the `json` payload is not touched', withServer, async (t, server, got) => {
 	server.post('/', defaultEndpoint);
 
-	const {body} = await got.post({
+	const {body} = await got.post<{context: {foo: true}}>({
 		json: {
 			context: {
 				foo: true

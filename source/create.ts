@@ -1,20 +1,20 @@
 import {Merge} from 'type-fest';
-import * as errors from './errors';
-import {
-	Options,
-	Defaults,
-	NormalizedOptions,
-	Response,
-	CancelableRequest,
-	URLOrOptions,
-	HandlerFunction,
-	ExtendedOptions
-} from './utils/types';
-import deepFreeze from './utils/deep-freeze';
 import asPromise from './as-promise';
 import asStream, {ProxyStream} from './as-stream';
+import * as errors from './errors';
 import {normalizeArguments, mergeOptions} from './normalize-arguments';
-import {Hooks} from './known-hook-events';
+import deepFreeze from './utils/deep-freeze';
+import {
+	CancelableRequest,
+	Defaults,
+	DefaultOptions,
+	ExtendOptions,
+	HandlerFunction,
+	NormalizedOptions,
+	Options,
+	Response,
+	URLOrOptions
+} from './utils/types';
 
 export type HTTPAlias =
 	| 'get'
@@ -24,34 +24,37 @@ export type HTTPAlias =
 	| 'head'
 	| 'delete';
 
-export type ReturnStream = (url: string | Options & {isStream: true}, options?: Options & {isStream: true}) => ProxyStream;
-export type GotReturn = ProxyStream | CancelableRequest<Response>;
+export type ReturnStream = <T>(url: string | Merge<Options, {isStream?: true}>, options?: Merge<Options, {isStream?: true}>) => ProxyStream<T>;
+export type GotReturn<T = unknown> = CancelableRequest<T> | ProxyStream<T>;
 
 const getPromiseOrStream = (options: NormalizedOptions): GotReturn => options.isStream ? asStream(options) : asPromise(options);
 
-type OptionsOfDefaultResponseBody = Options & {isStream?: false; resolveBodyOnly?: false; responseType?: 'default'};
-type OptionsOfTextResponseBody = Options & {isStream?: false; resolveBodyOnly?: false; responseType: 'text'};
-type OptionsOfJSONResponseBody = Options & {isStream?: false; resolveBodyOnly?: false; responseType: 'json'};
-type OptionsOfBufferResponseBody = Options & {isStream?: false; resolveBodyOnly?: false; responseType: 'buffer'};
+const isGotInstance = (value: Got | ExtendOptions): value is Got => (
+	Reflect.has(value, 'defaults') && Reflect.has(value.defaults, 'options')
+);
+
+export type OptionsOfDefaultResponseBody = Merge<Options, {isStream?: false; resolveBodyOnly?: false; responseType?: 'default'}>;
+type OptionsOfTextResponseBody = Merge<Options, {isStream?: false; resolveBodyOnly?: false; responseType: 'text'}>;
+type OptionsOfJSONResponseBody = Merge<Options, {isStream?: false; resolveBodyOnly?: false; responseType: 'json'}>;
+type OptionsOfBufferResponseBody = Merge<Options, {isStream?: false; resolveBodyOnly?: false; responseType: 'buffer'}>;
 type ResponseBodyOnly = {resolveBodyOnly: true};
 
 interface GotFunctions {
 	// `asPromise` usage
-	(url: string | OptionsOfDefaultResponseBody, options?: OptionsOfDefaultResponseBody): CancelableRequest<Response>;
+	<T = string>(url: string | OptionsOfDefaultResponseBody, options?: OptionsOfDefaultResponseBody): CancelableRequest<Response<T>>;
 	(url: string | OptionsOfTextResponseBody, options?: OptionsOfTextResponseBody): CancelableRequest<Response<string>>;
-	(url: string | OptionsOfJSONResponseBody, options?: OptionsOfJSONResponseBody): CancelableRequest<Response<object>>;
+	<T>(url: string | OptionsOfJSONResponseBody, options?: OptionsOfJSONResponseBody): CancelableRequest<Response<T>>;
 	(url: string | OptionsOfBufferResponseBody, options?: OptionsOfBufferResponseBody): CancelableRequest<Response<Buffer>>;
-
-	(url: string | OptionsOfDefaultResponseBody & ResponseBodyOnly, options?: OptionsOfDefaultResponseBody & ResponseBodyOnly): CancelableRequest<any>;
-	(url: string | OptionsOfTextResponseBody & ResponseBodyOnly, options?: OptionsOfTextResponseBody & ResponseBodyOnly): CancelableRequest<string>;
-	(url: string | OptionsOfJSONResponseBody & ResponseBodyOnly, options?: OptionsOfJSONResponseBody & ResponseBodyOnly): CancelableRequest<object>;
-	(url: string | OptionsOfBufferResponseBody & ResponseBodyOnly, options?: OptionsOfBufferResponseBody & ResponseBodyOnly): CancelableRequest<Buffer>;
-
+	// `resolveBodyOnly` usage
+	<T = string>(url: string | Merge<OptionsOfDefaultResponseBody, ResponseBodyOnly>, options?: Merge<OptionsOfDefaultResponseBody, ResponseBodyOnly>): CancelableRequest<T>;
+	(url: string | Merge<OptionsOfTextResponseBody, ResponseBodyOnly>, options?: Merge<OptionsOfTextResponseBody, ResponseBodyOnly>): CancelableRequest<string>;
+	<T>(url: string | Merge<OptionsOfJSONResponseBody, ResponseBodyOnly>, options?: Merge<OptionsOfJSONResponseBody, ResponseBodyOnly>): CancelableRequest<T>;
+	(url: string | Merge<OptionsOfBufferResponseBody, ResponseBodyOnly>, options?: Merge<OptionsOfBufferResponseBody, ResponseBodyOnly>): CancelableRequest<Buffer>;
 	// `asStream` usage
-	(url: string | Options & {isStream: true}, options?: Options & {isStream: true}): ProxyStream;
+	<T>(url: string | Merge<Options, {isStream: true}>, options?: Merge<Options, {isStream: true}>): ProxyStream<T>;
 }
 
-export interface Got extends Merge<Record<HTTPAlias, GotFunctions>, GotFunctions> {
+export interface Got extends Record<HTTPAlias, GotFunctions>, GotFunctions {
 	stream: GotStream;
 	defaults: Defaults | Readonly<Defaults>;
 	GotError: typeof errors.GotError;
@@ -65,9 +68,9 @@ export interface Got extends Merge<Record<HTTPAlias, GotFunctions>, GotFunctions
 	TimeoutError: typeof errors.TimeoutError;
 	CancelError: typeof errors.CancelError;
 
-	extend(...instancesOrOptions: Array<Got | ExtendedOptions>): Got;
+	extend(...instancesOrOptions: Array<Got | ExtendOptions>): Got;
 	mergeInstances(parent: Got, ...instances: Got[]): Got;
-	mergeOptions<T extends Options>(...sources: T[]): T & {hooks: Partial<Hooks>};
+	mergeOptions(...sources: Options[]): NormalizedOptions;
 }
 
 export interface GotStream extends Record<HTTPAlias, ReturnStream> {
@@ -87,9 +90,11 @@ export const defaultHandler: HandlerFunction = (options, next) => next(options);
 
 const create = (defaults: Defaults): Got => {
 	// Proxy properties from next handlers
+	// @ts-ignore Internal use only.
 	defaults._rawHandlers = defaults.handlers;
 	defaults.handlers = defaults.handlers.map(fn => ((options, next) => {
-		let root: GotReturn;
+		// This will be assigned by assigning result
+		let root!: ReturnType<typeof next>;
 
 		const result = fn(options, newOptions => {
 			root = next(newOptions);
@@ -102,21 +107,21 @@ const create = (defaults: Defaults): Got => {
 		}
 
 		return result;
-	}) as HandlerFunction);
+	}));
 
 	// @ts-ignore Because the for loop handles it for us, as well as the other Object.defines
 	const got: Got = (url: URLOrOptions, options?: Options): GotReturn => {
 		let iteration = 0;
-		const iterateHandlers: HandlerFunction = newOptions => {
+		const iterateHandlers = (newOptions: NormalizedOptions): GotReturn => {
 			return defaults.handlers[iteration++](
 				newOptions,
 				// @ts-ignore TS doesn't know that it calls `getPromiseOrStream` at the end
 				iteration === defaults.handlers.length ? getPromiseOrStream : iterateHandlers
-			);
+			) as GotReturn;
 		};
 
+		/* eslint-disable @typescript-eslint/return-await */
 		try {
-			// @ts-ignore This handler takes only one parameter.
 			return iterateHandlers(normalizeArguments(url, options, defaults));
 		} catch (error) {
 			if (options?.isStream) {
@@ -126,28 +131,29 @@ const create = (defaults: Defaults): Got => {
 				return Promise.reject(error);
 			}
 		}
+		/* eslint-enable @typescript-eslint/return-await */
 	};
 
 	got.extend = (...instancesOrOptions) => {
 		const optionsArray: Options[] = [defaults.options];
+		// @ts-ignore Internal use only.
 		let handlers: HandlerFunction[] = [...defaults._rawHandlers];
-		let mutableDefaults: boolean;
+		let mutableDefaults: boolean | undefined;
 
 		for (const value of instancesOrOptions) {
-			if (Reflect.has(value, 'defaults')) {
-				optionsArray.push((value as Got).defaults.options);
-
-				handlers.push(...(value as Got).defaults._rawHandlers);
-
-				mutableDefaults = (value as Got).defaults.mutableDefaults;
+			if (isGotInstance(value)) {
+				optionsArray.push(value.defaults.options);
+				// @ts-ignore Internal use only.
+				handlers.push(...value.defaults._rawHandlers);
+				mutableDefaults = value.defaults.mutableDefaults;
 			} else {
-				optionsArray.push(value as ExtendedOptions);
+				optionsArray.push(value);
 
 				if (Reflect.has(value, 'handlers')) {
-					handlers.push(...(value as ExtendedOptions).handlers);
+					handlers.push(...value.handlers);
 				}
 
-				mutableDefaults = (value as ExtendedOptions).mutableDefaults;
+				mutableDefaults = value.mutableDefaults;
 			}
 		}
 
@@ -158,9 +164,9 @@ const create = (defaults: Defaults): Got => {
 		}
 
 		return create({
-			options: mergeOptions(...optionsArray),
+			options: mergeOptions(...optionsArray) as DefaultOptions,
 			handlers,
-			mutableDefaults
+			mutableDefaults: Boolean(mutableDefaults)
 		});
 	};
 
@@ -168,7 +174,7 @@ const create = (defaults: Defaults): Got => {
 	got.stream = (url, options) => got(url, {...options, isStream: true});
 
 	for (const method of aliases) {
-		// @ts-ignore
+		// @ts-ignore GotReturn<Response> does not equal GotReturn<T>
 		got[method] = (url: URLOrOptions, options?: Options): GotReturn => got(url, {...options, method});
 		got.stream[method] = (url, options) => got.stream(url, {...options, method});
 	}

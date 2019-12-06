@@ -1,5 +1,5 @@
 import create, {defaultHandler} from './create';
-import {Defaults} from './utils/types.js';
+import {Defaults} from './utils/types';
 
 const defaults: Defaults = {
 	options: {
@@ -41,9 +41,11 @@ const defaults: Defaults = {
 			'user-agent': 'got (https://github.com/sindresorhus/got)'
 		},
 		hooks: {
+			init: [],
 			beforeRequest: [],
 			beforeRedirect: [],
 			beforeRetry: [],
+			beforeError: [],
 			afterResponse: []
 		},
 		decompress: true,
@@ -56,7 +58,10 @@ const defaults: Defaults = {
 		responseType: 'default',
 		resolveBodyOnly: false,
 		maxRedirects: 10,
-		prefixUrl: ''
+		prefixUrl: '',
+		methodRewriting: true,
+		ignoreInvalidCookies: false,
+		context: {}
 	},
 	handlers: [defaultHandler],
 	mutableDefaults: false

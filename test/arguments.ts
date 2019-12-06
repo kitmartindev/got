@@ -1,17 +1,18 @@
 /* eslint-disable node/no-deprecated-api */
 import {parse} from 'url';
 import test from 'ava';
+import {Handler} from 'express';
 import pEvent = require('p-event');
 import got from '../source';
 import withServer from './helpers/with-server';
 
-const echoUrl = (request, response) => {
+const echoUrl: Handler = (request, response) => {
 	response.end(request.url);
 };
 
 test('`url` is required', async t => {
 	await t.throwsAsync(
-		// @ts-ignore Manual tests
+		// @ts-ignore Error tests
 		got(''),
 		{
 			instanceOf: TypeError,
@@ -30,8 +31,11 @@ test('`url` should be utf-8 encoded', async t => {
 });
 
 test('throws if no arguments provided', async t => {
-	// @ts-ignore This is on purpose.
-	await t.throwsAsync(got(), TypeError, 'Missing `url` argument');
+	// @ts-ignore Error tests
+	await t.throwsAsync(got(), {
+		instanceOf: TypeError,
+		message: 'Missing `url` argument'
+	});
 });
 
 test('throws an error if the protocol is not specified', async t => {
@@ -89,6 +93,7 @@ test('throws an error when legacy Url is passed', withServer, async (t, server, 
 	server.get('/test', echoUrl);
 
 	await t.throwsAsync(
+		// @ts-ignore Error tests
 		got(parse(`${server.url}/test`)),
 		'The legacy `url.Url` is deprecated. Use `URL` instead.'
 	);
@@ -104,11 +109,17 @@ test('overrides `searchParams` from options', withServer, async (t, server, got)
 				test: 'wow'
 			},
 			cache: {
-				get(key) {
+				get(key: string) {
 					t.is(key, `cacheable-request:GET:${server.url}/?test=wow`);
 				},
-				set(key) {
+				set(key: string) {
 					t.is(key, `cacheable-request:GET:${server.url}/?test=wow`);
+				},
+				delete() {
+					return true;
+				},
+				clear() {
+					return undefined;
 				}
 			}
 		}
@@ -144,7 +155,7 @@ test('ignores empty searchParams object', withServer, async (t, server, got) => 
 });
 
 test('throws when passing body with a non payload method', async t => {
-	// @ts-ignore Manual tests
+	// @ts-ignore Error tests
 	await t.throwsAsync(got('https://example.com', {body: 'asdf'}), {
 		instanceOf: TypeError,
 		message: 'The `GET` method cannot be used with a body'
@@ -181,7 +192,7 @@ test('can omit `url` option if using `prefixUrl`', withServer, async (t, server,
 
 test('throws TypeError when `options.hooks` is not an object', async t => {
 	await t.throwsAsync(
-		// @ts-ignore Manual tests
+		// @ts-ignore Error tests
 		got('https://example.com', {hooks: 'not object'}),
 		{
 			instanceOf: TypeError,
@@ -192,7 +203,7 @@ test('throws TypeError when `options.hooks` is not an object', async t => {
 
 test('throws TypeError when known `options.hooks` value is not an array', async t => {
 	await t.throwsAsync(
-		// @ts-ignore Manual tests
+		// @ts-ignore Error tests
 		got('https://example.com', {hooks: {beforeRequest: {}}}),
 		{
 			instanceOf: TypeError,
@@ -202,8 +213,9 @@ test('throws TypeError when known `options.hooks` value is not an array', async 
 });
 
 test('throws TypeError when known `options.hooks` array item is not a function', async t => {
+	// @ts-ignore Error tests
 	await t.throwsAsync(
-		// @ts-ignore Manual tests
+		// @ts-ignore Error tests
 		got('https://example.com', {hooks: {beforeRequest: [{}]}}),
 		{
 			instanceOf: TypeError,
@@ -215,6 +227,7 @@ test('throws TypeError when known `options.hooks` array item is not a function',
 test('allows extra keys in `options.hooks`', withServer, async (t, server, got) => {
 	server.get('/test', echoUrl);
 
+	// @ts-ignore We do not allow extra keys in hooks but this won't throw
 	await t.notThrowsAsync(got('test', {hooks: {extra: []}}));
 });
 
@@ -275,8 +288,9 @@ test('throws if cannot change `prefixUrl`', async t => {
 });
 
 test('throws if the `searchParams` value is invalid', async t => {
+	// @ts-ignore Error tests
 	await t.throwsAsync(got('https://example.com', {
-		// @ts-ignore Manual tests
+		// @ts-ignore Error tests
 		searchParams: {
 			foo: []
 		}
@@ -335,4 +349,11 @@ test('`context` option is accessible when extending instances', t => {
 
 	t.is(instance.defaults.options.context, context);
 	t.false({}.propertyIsEnumerable.call(instance.defaults.options, 'context'));
+});
+
+test('throws if `options.encoding` is `null`', async t => {
+	// @ts-ignore Error tests
+	await t.throwsAsync(got('https://example.com', {
+		encoding: null
+	}), 'To get a Buffer, set `options.responseType` to `buffer` instead');
 });
